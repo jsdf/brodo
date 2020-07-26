@@ -9,12 +9,13 @@
     "aws-sdk": "^2.720.0",
     "billboard.js": "^2.0.2",
     "dygraphs": "^2.1.0",
+    "fuse.js": "^6.4.1",
     "get-port": "^5.1.1",
     "papaparse": "^5.2.0",
     "react": "^16.13.1",
     "react-dom": "^16.13.1",
     "react-scripts": "3.4.1",
-    "react-select": "^3.1.0",
+    "react-tag-autocomplete": "^6.0.0",
     "socket.io": "^2.3.0"
   },
   "scripts": {

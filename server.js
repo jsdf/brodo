@@ -10,7 +10,8 @@ const socketio = require('socket.io');
 const fs = require('fs');
 const path = require('path');
 
-const athena = require('./athena');
+const config = require('./config');
+const athena = require('./athena').init(config.athena);
 
 const DEV = process.env.NODE_ENV === 'development';
 
@@ -24,6 +25,22 @@ app.use(express.static(uiRoot));
 function delay(time) {
   return new Promise((resolve) => setTimeout(resolve, time));
 }
+
+class RequestCache {
+  cache = new Map();
+  get(getter, ...args) {
+    const key = JSON.stringify(args);
+    if (this.cache.has(key)) {
+      return this.cache.get(key);
+    }
+
+    const promise = getter(...args);
+    this.cache.set(key, promise);
+    return promise;
+  }
+}
+
+const requestCache = new RequestCache();
 
 class Server {
   // persistent client state
@@ -50,7 +67,7 @@ class Server {
   }
 
   async startQuery({sql, query}) {
-    const res = await athena.runQuery(sql);
+    const res = await athena.runQuery(config.athena, sql);
     this.setState({
       queryStates: {
         ...this.state.queryStates,
@@ -62,7 +79,7 @@ class Server {
 
   async getQueryStatus(queryExecutionId) {
     if (!queryExecutionId) throw new Error('missing queryExecutionId');
-    const status = await athena.getQueryStatus(queryExecutionId);
+    const status = await athena.getQueryStatus(config.athena, queryExecutionId);
 
     this.setState({
       queryStates: {
@@ -128,10 +145,30 @@ class Server {
       res.set('Access-Control-Allow-Origin', '*');
 
       athena
-        .getQueryResultsCSV(req.query.id)
+        .getQueryResultsCSV(config.athena, req.query.id)
         .then((result) => {
           res.header('Content-Type', 'text/csv');
           res.status(200).send(result);
+        })
+        .catch((err) => {
+          res
+            .status(503)
+            .type('text')
+            .send(err.stack);
+        });
+    });
+
+    app.get('/schema', (req, res) => {
+      res.set('Access-Control-Allow-Origin', '*');
+
+      requestCache
+        .get(athena.getSchemaFields.bind(athena), config.athena.schema.table)
+        .then((fieldsFromAPI) => {
+          const schema = {
+            ...config.athena.schema,
+            fields: {...fieldsFromAPI, ...config.athena.schema.fields},
+          };
+          res.json(schema);
         })
         .catch((err) => {
           res
@@ -149,7 +186,7 @@ class Server {
   }
 }
 
-getPort()
+(config.port ? Promise.resolve(config.port) : getPort())
   .then(async (httpPort) => {
     await new Server().startServer(httpPort);
     return httpPort;
