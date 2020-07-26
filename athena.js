@@ -17,19 +17,9 @@ function listQueryExecutions() {
   return athena.listQueryExecutions(params).promise();
 }
 
-function runQuery() {
+function runQuery(queryString) {
   var params = {
-    QueryString: `
-      SELECT
-        regexp_extract(requestdatetime, '^(.*?):', 1) as ds,
-        operation,
-        SUM(bytessent) as uploadtotal, 
-        SUM(objectsize) as downloadtotal, 
-        SUM(bytessent + objectsize) AS total
-      FROM s3_access_logs_db.jfriend_logs
-      WHERE operation in ('WEBSITE.GET.OBJECT', 'REST.GET.OBJECT')
-      GROUP BY 1,2
-    ` /* required */,
+    QueryString: queryString /* required */,
     // ClientRequestToken: 'STRING_VALUE',
     // QueryExecutionContext: {
     //   Catalog: 'STRING_VALUE',

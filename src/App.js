@@ -6,6 +6,9 @@ import 'dygraphs/dist/dygraph.css';
 import Papa from 'papaparse';
 import DragAndDrop from './DragAndDrop';
 import io from 'socket.io-client';
+import Select from 'react-select';
+
+import athenaQuery from './athenaQuery';
 
 const {useState, useEffect, useRef} = React;
 
@@ -18,10 +21,13 @@ if (!searchParams.has('port')) {
 
 const socketPort = parseInt(searchParams.get('port'));
 
+function last(arr) {
+  return arr[arr.length - 1];
+}
+
 async function loadCSV(uri) {
   const res = await fetch(uri);
   const csvString = await res.text();
-  debugger;
   return Papa.parse(csvString);
 }
 
@@ -47,19 +53,142 @@ function Details({summary, children}) {
 
 const giga = 1024 * 1024 * 1024;
 
-function Chart({data}) {
+const schema = {
+  table: 's3_access_logs_db.jfriend_logs',
+  timeCol: 'ds',
+  fields: {
+    ds: {
+      type: 'string',
+      derived: `regexp_extract(requestdatetime, '^(.*?):', 1)`,
+    },
+    transfer: {type: 'number', derived: `bytessent + objectsize`},
+
+    bucketowner: {type: 'string'},
+    bucket: {type: 'string'},
+    requestdatetime: {type: 'string'},
+    remoteip: {type: 'string'},
+    requester: {type: 'string'},
+    requestid: {type: 'string'},
+    operation: {type: 'string'},
+    key: {type: 'string'},
+    requesturi_operation: {type: 'string'},
+    requesturi_key: {type: 'string'},
+    requesturi_httpprotoversion: {type: 'string'},
+    httpstatus: {type: 'string'},
+    errorcode: {type: 'string'},
+    bytessent: {type: 'number'},
+    objectsize: {type: 'number'},
+    totaltime: {type: 'string'},
+    turnaroundtime: {type: 'string'},
+    referrer: {type: 'string'},
+    useragent: {type: 'string'},
+    versionid: {type: 'string'},
+    hostid: {type: 'string'},
+    sigv: {type: 'string'},
+    ciphersuite: {type: 'string'},
+    authtype: {type: 'string'},
+    endpoint: {type: 'string'},
+    tlsversion: {type: 'string'},
+  },
+};
+
+function QueryBuilder({api}) {
+  const [state, setState] = useState({aggCols: {}, groupByCols: ['ds']});
+
+  function handleAggColToggle(e) {
+    const {name, checked} = e.currentTarget;
+    setState((s) => ({
+      ...s,
+      aggCols: {...s.aggCols, [name]: checked},
+    }));
+  }
+  function handleGroupByChange(selected) {
+    setState((s) => ({
+      ...s,
+      groupByCols: selected ? selected.map((option) => option.value) : [],
+    }));
+  }
+  const query = {
+    groupByCols: state.groupByCols,
+    aggCols: Object.entries(state.aggCols)
+      .filter(([col, enabled]) => enabled)
+      .map(([col, enabled]) => ({name: col})),
+    defaultAgg: 'sum',
+    filters: [],
+    schema,
+  };
+
+  return (
+    <div style={{maxWidth: 400}}>
+      <h2>Query</h2>
+      <div>
+        group by:
+        <Select
+          onChange={handleGroupByChange}
+          isMulti={true}
+          options={Object.entries(schema.fields)
+            .filter(([col, f]) => f.type == 'string')
+            .map(([col, f]) => ({value: col, label: col}))}
+        />
+      </div>
+      <div>
+        aggregate columns:
+        {Object.entries(schema.fields)
+          .filter(([col, f]) => f.type == 'number')
+          .map(([col, f]) => (
+            <div
+              key={col}
+              style={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                width: '100%',
+                margin: 4,
+              }}
+            >
+              <label htmlFor={col}>{col}: </label>
+              <input
+                name={col}
+                type="checkbox"
+                checked={Boolean(state.aggCols[col])}
+                onChange={handleAggColToggle}
+              />
+            </div>
+          ))}
+      </div>
+      <Details summary={'query debug'}>
+        <pre>{JSON.stringify(state, null, 2)}</pre>
+        <pre>{athenaQuery.buildAggQuery(query)}</pre>
+      </Details>
+      <button
+        disabled={query.aggCols.length == 0}
+        onClick={() =>
+          api.sendCommand('query', {
+            sql: athenaQuery.buildAggQuery(query),
+            query,
+          })
+        }
+      >
+        Run Query
+      </button>
+    </div>
+  );
+}
+
+function Chart({data, queryState}) {
   const chartEl = React.useRef(null);
 
   React.useEffect(() => {
     if (data) {
       console.log(data);
       try {
-        const groupByDimensions = ['operation'];
         const colNames = data.data[0];
         const dsColName = colNames[0];
+        const groupByDimensions = queryState.query.groupByCols.filter(
+          (colName) => colName != dsColName
+        );
 
         // convert rows to objects
-        const rows = data.data
+        let rows = data.data
           .slice(1)
           .filter((row) => row.length == colNames.length)
           .map((row) =>
@@ -68,6 +197,9 @@ function Chart({data}) {
               return acc;
             }, {})
           );
+
+        // not sure about this
+        rows = rows.filter((row) => row[dsColName] != '');
 
         const groupByDimensionsValues = {};
         groupByDimensions.forEach((dim) => {
@@ -120,7 +252,9 @@ function Chart({data}) {
           )
           .sort((a, b) => a[0] - b[0]);
 
-        const labels = [dsColName].concat(unfoldedCols);
+        const labels = [dsColName]
+          .concat(unfoldedCols)
+          .map((label) => label.replace(/_([^_]+)_agg$/, ' $1'));
 
         console.log(labels);
 
@@ -156,7 +290,15 @@ function Chart({data}) {
   );
 }
 
-function LoadChart({dataURL}) {
+function resultURL(queryID) {
+  return `http://localhost:${socketPort}/query-result?id=${queryID}`;
+}
+
+function isQuerySuccessful(query) {
+  return query?.status?.QueryExecution.Status.State == 'SUCCEEDED';
+}
+
+function LoadChart({dataURL, queryState}) {
   const [data, setData] = React.useState(null);
   React.useEffect(() => {
     loadCSV(dataURL).then((data) => {
@@ -164,7 +306,14 @@ function LoadChart({dataURL}) {
     });
   }, []);
 
-  return <Chart data={data} />;
+  return (
+    <div>
+      <Chart data={data} queryState={queryState} />
+      <Details summary={<span>result</span>}>
+        <pre>{JSON.stringify(data, null, 2)}</pre>
+      </Details>
+    </div>
+  );
 }
 
 function DropCSV() {
@@ -229,6 +378,8 @@ function App() {
     };
   }, []);
 
+  const lastQuery = state ? last(Object.entries(state.queryStates)) : null;
+
   return (
     <div>
       {false && (
@@ -237,27 +388,46 @@ function App() {
           <summary>drag and drop data</summary>
         </details>
       )}
+      <QueryBuilder api={api} />
       {state &&
         Object.entries(state.queryStates).map(([queryID, query], i) => (
-          <Details key={i} summary={<span>query {i}</span>}>
+          <Details
+            key={i}
+            summary={
+              <span>
+                query {i} ({query?.status?.QueryExecution.Status.State})
+              </span>
+            }
+          >
             <div style={{margin: 16}}>
               <Details key={i} summary={<span>query metadata</span>}>
                 <pre>{JSON.stringify(query, null, 2)}</pre>
               </Details>
-              <LoadChart
-                dataURL={`http://localhost:${socketPort}/query-result?id=${queryID}`}
-              />
+              {isQuerySuccessful(query) && (
+                <LoadChart dataURL={resultURL(queryID)} queryState={query} />
+              )}
             </div>
           </Details>
         ))}
+
+      {isQuerySuccessful(lastQuery?.[1]) && (
+        <LoadChart
+          dataURL={resultURL(lastQuery[0])}
+          queryState={lastQuery[1]}
+        />
+      )}
       <button
         onClick={() => {
-          api.sendCommand('status', {
-            queryExecutionId: 'c93d2db5-3d25-4a9d-8be0-c94accf8f746',
+          Object.entries(state.queryStates).forEach(([queryID, query]) => {
+            if (queryID) {
+              api.sendCommand('status', {
+                queryExecutionId: queryID,
+              });
+            }
           });
         }}
       >
-        load from athena
+        refresh queries
       </button>
     </div>
   );

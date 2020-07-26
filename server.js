@@ -21,6 +21,10 @@ const server = http.Server(app);
 const io = socketio(server);
 app.use(express.static(uiRoot));
 
+function delay(time) {
+  return new Promise((resolve) => setTimeout(resolve, time));
+}
+
 class Server {
   // persistent client state
   state = {
@@ -29,6 +33,7 @@ class Server {
   };
 
   setState(stateUpdate) {
+    console.error('setState', Object.keys(stateUpdate));
     Object.assign(this.state, stateUpdate);
     fs.writeFile(
       'laststate.json',
@@ -44,21 +49,57 @@ class Server {
     console.error(message, error);
   }
 
-  handleCommand(cmd, data) {
-    switch (cmd) {
-      case 'status':
-        athena
-          .getQueryStatus(data.queryExecutionId)
-          .then((res) => {
-            this.setState({
-              queryStates: {
-                ...this.state.queryStates,
-                [data.queryExecutionId]: res,
-              },
-            });
-            console.log(res);
-          })
-          .catch((err) => console.error(err));
+  async startQuery({sql, query}) {
+    const res = await athena.runQuery(sql);
+    this.setState({
+      queryStates: {
+        ...this.state.queryStates,
+        [res.QueryExecutionId]: {sql, query},
+      },
+    });
+    return res.QueryExecutionId;
+  }
+
+  async getQueryStatus(queryExecutionId) {
+    if (!queryExecutionId) throw new Error('missing queryExecutionId');
+    const status = await athena.getQueryStatus(queryExecutionId);
+
+    this.setState({
+      queryStates: {
+        ...this.state.queryStates,
+        [queryExecutionId]: {
+          ...this.state.queryStates[queryExecutionId],
+          status,
+        },
+      },
+    });
+    return status;
+  }
+
+  async handleCommand(cmd, data) {
+    try {
+      switch (cmd) {
+        case 'query': {
+          const queryExecutionId = await this.startQuery(data);
+          let done = false;
+          let status;
+          while (!done) {
+            await delay(500);
+            status = await this.getQueryStatus(queryExecutionId);
+            done =
+              status.QueryExecution &&
+              ['SUCCEEDED', 'FAILED'].includes(
+                status.QueryExecution.Status.State
+              );
+          }
+          return;
+        }
+        case 'status': {
+          return await this.getQueryStatus(data.queryExecutionId);
+        }
+      }
+    } catch (err) {
+      this.handleError(err);
     }
   }
 
