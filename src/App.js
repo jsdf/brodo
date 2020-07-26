@@ -107,12 +107,15 @@ function QueryBuilder({api, schema}) {
     [state.groupByCols]
   );
 
-  const groupBySelectOptions = useMemo(
+  const groupableColumns = useMemo(
     () =>
-      Object.entries(schema.fields)
-        .filter(([col, f]) => f.type === 'string')
-        .map(([col, f]) => ({id: col, name: col})),
+      Object.entries(schema.fields).filter(([col, f]) => f.type === 'string'),
     [schema.fields]
+  );
+
+  const groupBySelectOptions = useMemo(
+    () => groupableColumns.map(([col, f]) => ({id: col, name: col})),
+    [groupableColumns]
   );
 
   return (
@@ -124,7 +127,12 @@ function QueryBuilder({api, schema}) {
           onChange={handleGroupByChange}
           value={groupBySelectValues}
           options={groupBySelectOptions}
+          placeholderText="Add a group by column"
+          removeButtonText="Click to remove column"
         />
+        <Details summary={'groupable columns'}>
+          {groupableColumns.map(([col, f]) => col).join(', ')}
+        </Details>
       </div>
       <div style={styles.section}>
         <div style={styles.sectionLabel}>aggregate columns:</div>

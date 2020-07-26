@@ -43,7 +43,7 @@ function search(options, filter) {
   return fuse.search(filter);
 }
 
-function FuzzySelect({options, value, onChange}) {
+function FuzzySelect({options, value, onChange, ...restProps}) {
   const tags = value;
   const [suggestions, setSuggestions] = useState([]);
 
@@ -100,6 +100,7 @@ function FuzzySelect({options, value, onChange}) {
   return (
     <span onKeyDown={onKeyDown}>
       <ReactTags
+        {...restProps}
         ref={reactTagsRef}
         tags={tags}
         suggestions={suggestions}

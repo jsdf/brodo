@@ -79,7 +79,7 @@ class Server {
 
   async getQueryStatus(queryExecutionId) {
     if (!queryExecutionId) throw new Error('missing queryExecutionId');
-    const status = await athena.getQueryStatus(config.athena, queryExecutionId);
+    const status = await athena.getQueryStatus(queryExecutionId);
 
     this.setState({
       queryStates: {
@@ -93,15 +93,18 @@ class Server {
     return status;
   }
 
+  // RPC from client
   async handleCommand(cmd, data) {
     try {
       switch (cmd) {
         case 'query': {
+          console.log('startQuery', data);
           const queryExecutionId = await this.startQuery(data);
           let done = false;
           let status;
           while (!done) {
             await delay(500);
+            console.log('getQueryStatus', queryExecutionId);
             status = await this.getQueryStatus(queryExecutionId);
             done =
               status.QueryExecution &&
@@ -116,6 +119,7 @@ class Server {
         }
       }
     } catch (err) {
+      console.error('caught in handleCommand', cmd, data);
       this.handleError(err);
     }
   }

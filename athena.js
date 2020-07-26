@@ -86,7 +86,10 @@ function init({region}) {
     {bucket, outputLocation},
     queryExecutionId
   ) {
-    const res = await getObject(`${outputLocation}/${queryExecutionId}.csv`);
+    const res = await getObject(
+      {bucket},
+      `${outputLocation}/${queryExecutionId}.csv`
+    );
     return res.Body.toString();
   }
 
