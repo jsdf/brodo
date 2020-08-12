@@ -26,21 +26,29 @@ function delay(time) {
   return new Promise((resolve) => setTimeout(resolve, time));
 }
 
-class RequestCache {
-  cache = new Map();
-  get(getter, ...args) {
+class ResultCache {
+  methodsCache = new Map();
+
+  // usage: `resultCache.get(obj.method.bind(obj), arg1, arg2)`
+  // returns method result memoized by arguments so they are cached
+  // for the lifetime of the server
+  get(context, getter, ...args) {
+    // cache for method
+    const cacheByArgs = this.methodsCache.get(getter) || new Map();
+    this.methodsCache.set(getter, cacheByArgs);
+
     const key = JSON.stringify(args);
-    if (this.cache.has(key)) {
-      return this.cache.get(key);
+    if (cacheByArgs.has(key)) {
+      return cacheByArgs.get(key);
     }
 
-    const promise = getter(...args);
-    this.cache.set(key, promise);
-    return promise;
+    const result = getter.apply(context, args);
+    cacheByArgs.set(key, result);
+    return result;
   }
 }
 
-const requestCache = new RequestCache();
+const resultCache = new ResultCache();
 
 class Server {
   // persistent client state
@@ -52,18 +60,17 @@ class Server {
   setState(stateUpdate) {
     console.error('setState', Object.keys(stateUpdate));
     Object.assign(this.state, stateUpdate);
-    fs.writeFile(
-      'laststate.json',
-      JSON.stringify(this.state),
-      {encoding: 'utf8'},
-      () => {}
-    );
     io.emit('state', this.state);
   }
 
   handleError(message, error) {
-    this.state.serverErrors.push({message, error});
     console.error(message, error);
+    this.setState({
+      serverErrors: this.state.serverErrors.concat({
+        message,
+        error: error.stack,
+      }),
+    });
   }
 
   async startQuery({sql, query}) {
@@ -71,7 +78,12 @@ class Server {
     this.setState({
       queryStates: {
         ...this.state.queryStates,
-        [res.QueryExecutionId]: {sql, query},
+        [res.QueryExecutionId]: {
+          queryExecutionId: res.QueryExecutionId,
+          sql,
+          query,
+          state: 'QUEUED',
+        },
       },
     });
     return res.QueryExecutionId;
@@ -81,16 +93,21 @@ class Server {
     if (!queryExecutionId) throw new Error('missing queryExecutionId');
     const status = await athena.getQueryStatus(queryExecutionId);
 
+    const queryState = {
+      ...this.state.queryStates[queryExecutionId],
+      status,
+      state: status.QueryExecution
+        ? status.QueryExecution.Status.State
+        : 'QUEUED',
+    };
+
     this.setState({
       queryStates: {
         ...this.state.queryStates,
-        [queryExecutionId]: {
-          ...this.state.queryStates[queryExecutionId],
-          status,
-        },
+        [queryExecutionId]: queryState,
       },
     });
-    return status;
+    return queryState;
   }
 
   // RPC from client
@@ -98,19 +115,14 @@ class Server {
     try {
       switch (cmd) {
         case 'query': {
-          console.log('startQuery', data);
           const queryExecutionId = await this.startQuery(data);
           let done = false;
           let status;
           while (!done) {
-            await delay(500);
-            console.log('getQueryStatus', queryExecutionId);
+            await delay(1000);
             status = await this.getQueryStatus(queryExecutionId);
-            done =
-              status.QueryExecution &&
-              ['SUCCEEDED', 'FAILED'].includes(
-                status.QueryExecution.Status.State
-              );
+            done = status.state === 'SUCCEEDED' || status.state === 'FAILED';
+            console.log('query', queryExecutionId, status.state);
           }
           return;
         }
@@ -119,8 +131,10 @@ class Server {
         }
       }
     } catch (err) {
-      console.error('caught in handleCommand', cmd, data);
-      this.handleError(err);
+      this.handleError(
+        `error running RPC: ${cmd} with arg ${JSON.stringify(data)}`,
+        err
+      );
     }
   }
 
@@ -148,8 +162,8 @@ class Server {
     app.get('/query-result', (req, res) => {
       res.set('Access-Control-Allow-Origin', '*');
 
-      athena
-        .getQueryResultsCSV(config.athena, req.query.id)
+      resultCache
+        .get(athena, athena.getQueryResultsCSV, config.athena, req.query.id)
         .then((result) => {
           res.header('Content-Type', 'text/csv');
           res.status(200).send(result);
@@ -165,8 +179,8 @@ class Server {
     app.get('/schema', (req, res) => {
       res.set('Access-Control-Allow-Origin', '*');
 
-      requestCache
-        .get(athena.getSchemaFields.bind(athena), config.athena.schema.table)
+      resultCache
+        .get(athena, athena.getSchemaFields, config.athena.schema.table)
         .then((fieldsFromAPI) => {
           const schema = {
             ...config.athena.schema,

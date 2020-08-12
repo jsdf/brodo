@@ -1,16 +1,12 @@
 import React from 'react';
-// import logo from './logo.svg';
-// import './App.css';
-import Dygraph from 'dygraphs';
-import 'dygraphs/dist/dygraph.css';
 import Papa from 'papaparse';
-import DragAndDrop from './DragAndDrop';
 import io from 'socket.io-client';
 import FuzzySelect from './FuzzySelect';
+import Chart from './TimeseriesChart';
 
 import athenaQuery from './athenaQuery';
 
-const {useState, useEffect, useRef, useMemo} = React;
+const {useState, useEffect, useRef, useMemo, useCallback} = React;
 
 var searchParams = new URLSearchParams(window.location.search);
 
@@ -24,6 +20,14 @@ const socketPort = parseInt(searchParams.get('port'));
 const styles = {
   section: {margin: '8px 0'},
   sectionLabel: {marginBottom: 8, fontWeight: 'bold'},
+  td: {
+    maxWidth: 100,
+    overflow: 'hidden',
+  },
+  th: {
+    maxWidth: 100,
+    backgroundColor: '#ccc',
+  },
 };
 
 function serverURL(path) {
@@ -43,7 +47,7 @@ async function loadCSV(uri) {
 function Details({summary, children}) {
   const [open, setOpen] = useState(false);
 
-  const onToggle = React.useCallback(
+  const onToggle = useCallback(
     (e) => {
       e.preventDefault();
       e.stopPropagation();
@@ -60,11 +64,9 @@ function Details({summary, children}) {
   );
 }
 
-const giga = 1024 * 1024 * 1024;
-
 function useJSONRequest(uri) {
-  const [data, setData] = React.useState(null);
-  React.useEffect(() => {
+  const [data, setData] = useState(null);
+  useEffect(() => {
     fetch(uri)
       .then((res) => res.json())
       .then((json) => {
@@ -77,8 +79,20 @@ function useJSONRequest(uri) {
 }
 
 function QueryBuilder({api, schema}) {
-  const [state, setState] = useState({aggCols: {}, groupByCols: ['ds']});
+  const [state, setState] = useState({
+    aggCols: {},
+    groupByCols: [],
+    type: 'timeseries',
+    orderBy: null,
+  });
 
+  function handleTypeChange(e) {
+    const {name, checked} = e.currentTarget;
+    setState((s) => ({
+      ...s,
+      type: e.currentTarget.value,
+    }));
+  }
   function handleAggColToggle(e) {
     const {name, checked} = e.currentTarget;
     setState((s) => ({
@@ -92,11 +106,22 @@ function QueryBuilder({api, schema}) {
       groupByCols: selected.map((option) => option.name),
     }));
   }
+  function handleOrderByChange(orderBy) {
+    setState((s) => ({
+      ...s,
+      orderBy: last(orderBy)?.id,
+    }));
+  }
+
+  const aggCols = Object.entries(state.aggCols)
+    .filter(([col, enabled]) => enabled)
+    .map(([col, enabled]) => ({name: col}));
   const query = {
-    groupByCols: state.groupByCols,
-    aggCols: Object.entries(state.aggCols)
-      .filter(([col, enabled]) => enabled)
-      .map(([col, enabled]) => ({name: col})),
+    groupByCols: (state.type === 'timeseries' ? ['ds'] : []).concat(
+      state.groupByCols
+    ),
+    aggCols,
+    cols: aggCols,
     defaultAgg: 'sum',
     filters: [],
     schema,
@@ -118,27 +143,34 @@ function QueryBuilder({api, schema}) {
     [groupableColumns]
   );
 
+  const orderBySelectOptions = useMemo(
+    () =>
+      Object.entries(schema.fields).map(([col, f]) => ({id: col, name: col})),
+    [schema.fields]
+  );
+  const orderBySelectValue = useMemo(
+    () => [{id: state.orderBy, name: state.orderBy}],
+    [state.orderBy]
+  );
+
   return (
-    <div style={{maxWidth: 400, margin: 16}}>
-      <h2>Query</h2>
+    <div style={{minWidth: 400, maxWidth: 600, margin: 16}}>
+      <h2>brodo</h2>
+      <h3>{schema.table}</h3>
       <div style={styles.section}>
-        <div style={styles.sectionLabel}>group by:</div>
-        <FuzzySelect
-          onChange={handleGroupByChange}
-          value={groupBySelectValues}
-          options={groupBySelectOptions}
-          placeholderText="Add a group by column"
-          removeButtonText="Click to remove column"
-        />
-        <Details summary={'groupable columns'}>
-          {groupableColumns.map(([col, f]) => col).join(', ')}
-        </Details>
+        <label style={styles.sectionLabel}>query type:</label>
+        <select value={state.type} onChange={handleTypeChange}>
+          {['table', 'samples', 'timeseries'].map((v) => (
+            <option key={v} value={v}>
+              {v}
+            </option>
+          ))}
+        </select>
       </div>
-      <div style={styles.section}>
-        <div style={styles.sectionLabel}>aggregate columns:</div>
-        {Object.entries(schema.fields)
-          .filter(([col, f]) => f.type === 'number')
-          .map(([col, f]) => (
+      {state.type === 'samples' && (
+        <div style={styles.section}>
+          <div style={styles.sectionLabel}>columns:</div>
+          {Object.entries(schema.fields).map(([col, f]) => (
             <div
               key={col}
               style={{
@@ -157,17 +189,77 @@ function QueryBuilder({api, schema}) {
               />
             </div>
           ))}
+        </div>
+      )}
+      {state.type !== 'samples' && (
+        <>
+          <div style={styles.section}>
+            <div style={styles.sectionLabel}>group by:</div>
+            <FuzzySelect
+              onChange={handleGroupByChange}
+              value={groupBySelectValues}
+              options={groupBySelectOptions}
+              placeholderText="Add a group by column"
+              removeButtonText="Click to remove column"
+            />
+            <Details summary={'groupable columns'}>
+              {groupableColumns.map(([col, f]) => col).join(', ')}
+            </Details>
+          </div>
+          <div style={styles.section}>
+            <div style={styles.sectionLabel}>aggregate columns:</div>
+            {Object.entries(schema.fields)
+              .filter(([col, f]) => f.type === 'number')
+              .map(([col, f]) => (
+                <div
+                  key={col}
+                  style={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    width: '100%',
+                    margin: 4,
+                  }}
+                >
+                  <label htmlFor={col}>{col}: </label>
+                  <input
+                    name={col}
+                    type="checkbox"
+                    checked={Boolean(state.aggCols[col])}
+                    onChange={handleAggColToggle}
+                  />
+                </div>
+              ))}
+          </div>
+        </>
+      )}
+
+      <div style={styles.section}>
+        <div style={styles.sectionLabel}>order by:</div>
+        <FuzzySelect
+          onChange={handleOrderByChange}
+          value={state.orderBy ? orderBySelectValue : []}
+          options={orderBySelectOptions}
+          placeholderText="set order by column"
+          removeButtonText="Click to clear"
+        />
       </div>
       <Details summary={'query debug'}>
         <pre>{JSON.stringify(state, null, 2)}</pre>
-        <pre>{athenaQuery.buildAggQuery(query)}</pre>
+        <pre>
+          {state.type === 'samples'
+            ? athenaQuery.buildSampleQuery(query)
+            : athenaQuery.buildAggQuery(query)}
+        </pre>
       </Details>
       <button
         style={styles.section}
         disabled={query.aggCols.length === 0}
         onClick={() =>
           api.sendCommand('query', {
-            sql: athenaQuery.buildAggQuery(query),
+            sql:
+              state.type === 'samples'
+                ? athenaQuery.buildSampleQuery(query)
+                : athenaQuery.buildAggQuery(query),
             query,
           })
         }
@@ -178,141 +270,62 @@ function QueryBuilder({api, schema}) {
   );
 }
 
-function Chart({data, groupByCols}) {
-  const chartEl = React.useRef(null);
-
-  React.useEffect(() => {
-    if (data) {
-      console.log(data);
-      try {
-        const colNames = data.data[0];
-        const dsColName = colNames[0];
-        const groupByDimensions = groupByCols.filter(
-          (colName) => colName !== dsColName
-        );
-
-        // convert rows to objects
-        let rows = data.data
-          .slice(1)
-          .filter((row) => row.length === colNames.length)
-          .map((row) =>
-            row.reduce((acc, val, index) => {
-              acc[colNames[index]] = val;
-              return acc;
-            }, {})
-          );
-
-        // not sure about this
-        rows = rows.filter((row) => row[dsColName] !== '');
-
-        const groupByDimensionsValues = {};
-        groupByDimensions.forEach((dim) => {
-          rows.forEach((row) => {
-            groupByDimensionsValues[dim] =
-              groupByDimensionsValues[dim] || new Set();
-            groupByDimensionsValues[dim].add(row[dim]);
-          });
-        });
-
-        const groupedByDS = {};
-        rows.forEach((row) => {
-          if (!(dsColName in row)) {
-            throw new Error('ds column missing in row ' + JSON.stringify(row));
-          }
-          const ds = row[dsColName];
-          groupedByDS[ds] = groupedByDS[ds] || [];
-          groupedByDS[ds].push(row);
-        });
-
-        // the metric values: cols which are neither the ds or group by cols
-        const valueCols = colNames.filter(
-          (c) => !(c === dsColName || groupByDimensions.includes(c))
-        );
-
-        const timeseriesRecords = Object.entries(groupedByDS).map(
-          ([ds, rowsgroup]) => {
-            // wide rows with derived columns per group-by dimension
-            const valueColValues = {};
-            rowsgroup.forEach((row) => {
-              valueCols.forEach((vcol) => {
-                const unfoldedColKey =
-                  groupByDimensions.map((dim) => row[dim]).join(' ') +
-                  ' ' +
-                  vcol;
-                valueColValues[unfoldedColKey] = row[vcol];
-              });
-            });
-
-            return [ds, valueColValues];
-          }
-        );
-
-        const unfoldedCols = Object.keys(timeseriesRecords[0][1]);
-        const timeseriesRows = timeseriesRecords
-          .map(([ds, row]) =>
-            [new Date(ds)].concat(
-              unfoldedCols.map((col) => Number(row[col]) / giga)
-            )
-          )
-          .sort((a, b) => a[0] - b[0]);
-
-        const labels = [dsColName]
-          .concat(unfoldedCols)
-          .map((label) => label.replace(/_([^_]+)_agg$/, ' $1'));
-
-        console.log(labels);
-
-        console.log(timeseriesRows);
-
-        new Dygraph(
-          chartEl.current,
-          timeseriesRows,
-
-          {
-            labels: labels,
-            legend: 'always',
-            title: 's3 traffic',
-            showRoller: true,
-            // rollPeriod: 14,
-            // customBars: true,
-            ylabel: 'gb',
-          }
-        );
-      } catch (err) {
-        console.error(err);
-        debugger;
-      }
-    }
-  }, [data, groupByCols]);
-
-  return (
-    <div
-      style={{width: '100%', height: '80vh'}}
-      ref={chartEl}
-      className="App"
-    />
-  );
-}
-
 function resultURL(queryID) {
   return serverURL(`/query-result?id=${queryID}`);
 }
 
 function isQuerySuccessful(query) {
-  return query?.status?.QueryExecution.Status.State === 'SUCCEEDED';
+  return query?.state === 'SUCCEEDED';
+}
+
+function DataTable({data}) {
+  return (
+    <>
+      <table>
+        <tr>
+          {data.data[0].map((colName) => (
+            <th style={styles.th} key={colName}>
+              {colName}
+            </th>
+          ))}
+        </tr>
+        {data.data.slice(1, 1000).map((row, i) => (
+          <tr key={i}>
+            {row.map((v, i) => (
+              <td style={styles.td} key={i}>
+                {v}
+              </td>
+            ))}
+          </tr>
+        ))}
+      </table>
+
+      {data.data.length > 1000 && (
+        <div style={{backgroundColor: '#eee'}}>
+          additional rows truncated ({data.data.length} rows total)
+        </div>
+      )}
+    </>
+  );
 }
 
 function LoadChart({dataURL, queryState}) {
-  const [data, setData] = React.useState(null);
-  React.useEffect(() => {
+  const [data, setData] = useState(null);
+  useEffect(() => {
     loadCSV(dataURL).then((data) => {
       setData(data);
     });
   }, []);
 
   return (
-    <div>
-      <Chart data={data} groupByCols={queryState.query.groupByCols} />
+    <div style={{height: '100%', display: 'flex', flexDirection: 'column'}}>
+      {queryState.query.type === 'timeseries' ? (
+        <div style={{flex: 1, minHeight: '50%'}}>
+          <Chart data={data} groupByCols={queryState.query.groupByCols} />
+        </div>
+      ) : (
+        data && <DataTable data={data} />
+      )}
       <Details summary={<span>result</span>}>
         <pre>{JSON.stringify(data, null, 2)}</pre>
       </Details>
@@ -320,25 +333,20 @@ function LoadChart({dataURL, queryState}) {
   );
 }
 
-function DropCSV() {
-  const [data, setData] = React.useState(null);
-  const handleDrop = React.useCallback(async (files) => {
-    console.log(files);
-
-    for (var i = 0; i < files.length; i++) {
-      const file = await files[i].text();
-      setData(Papa.parse(file));
-      break;
-    }
-  }, []);
-  return data ? (
-    <Chart data={data} groupByCols={['operation']} />
-  ) : (
-    <DragAndDrop handleDrop={handleDrop}>
-      <div style={{height: 100, padding: 16}}>
-        <p>Drag one or more files to this Drop Zone ...</p>
-      </div>
-    </DragAndDrop>
+function Errors({clientErrors, serverErrors}) {
+  return (
+    <div style={{backgroundColor: 'red', color: 'white'}}>
+      {clientErrors.concat(serverErrors).map(({message, error}, i) => (
+        <Details
+          key={i}
+          summary={
+            message.length > 300 ? message.slice(0, 300) + '...' : message
+          }
+        >
+          <pre>{message + '\n' + error}</pre>
+        </Details>
+      ))}
+    </div>
   );
 }
 
@@ -389,64 +397,67 @@ function App() {
   }
 
   return (
-    <div>
+    <div style={{height: '100vh'}}>
       {state && (
-        <div style={{backgroundColor: 'red', color: 'white'}}>
-          {clientErrors
-            .concat(state.serverErrors)
-            .map(({message, error}, i) => (
-              <div key={i}>{message}</div>
-            ))}
-        </div>
+        <Errors {...{clientErrors, serverErrors: state.serverErrors}} />
       )}
-      {false && (
-        <details>
-          <DropCSV />
-          <summary>drag and drop data</summary>
-        </details>
-      )}
-      <QueryBuilder api={api} schema={schema} />
+      <div style={{display: 'flex', height: '100%'}}>
+        <div>
+          <QueryBuilder api={api} schema={schema} />
 
-      {isQuerySuccessful(lastQuery?.[1]) && (
-        <LoadChart
-          dataURL={resultURL(lastQuery[0])}
-          queryState={lastQuery[1]}
-        />
-      )}
-
-      {state &&
-        Object.entries(state.queryStates).map(([queryID, query], i) => (
-          <Details
-            key={i}
-            summary={
-              <span>
-                query {i} ({query?.status?.QueryExecution.Status.State})
-              </span>
-            }
-          >
-            <div style={{margin: 16}}>
-              <Details key={i} summary={<span>query metadata</span>}>
-                <pre>{JSON.stringify(query, null, 2)}</pre>
+          {state &&
+            Object.entries(state.queryStates).map(([queryID, query], i) => (
+              <Details
+                key={i}
+                summary={
+                  <span>
+                    query {i} ({query.state})
+                  </span>
+                }
+              >
+                <div style={{margin: 16}}>
+                  <Details key={i} summary={<span>query metadata</span>}>
+                    <pre>{JSON.stringify(query, null, 2)}</pre>
+                  </Details>
+                  <Details key={i} summary={<span>preview</span>}>
+                    {isQuerySuccessful(query) && (
+                      <LoadChart
+                        dataURL={resultURL(queryID)}
+                        queryState={query}
+                      />
+                    )}
+                  </Details>
+                </div>
               </Details>
-              {isQuerySuccessful(query) && (
-                <LoadChart dataURL={resultURL(queryID)} queryState={query} />
-              )}
-            </div>
-          </Details>
-        ))}
-      <button
-        onClick={() => {
-          Object.entries(state.queryStates).forEach(([queryID, query]) => {
-            if (queryID) {
-              api.sendCommand('status', {
-                queryExecutionId: queryID,
-              });
-            }
-          });
-        }}
-      >
-        refresh queries
-      </button>
+            ))}
+          {false && (
+            <button
+              onClick={() => {
+                Object.entries(state.queryStates).forEach(
+                  ([queryID, query]) => {
+                    if (queryID) {
+                      api.sendCommand('status', {
+                        queryExecutionId: queryID,
+                      });
+                    }
+                  }
+                );
+              }}
+            >
+              refresh queries
+            </button>
+          )}
+        </div>
+
+        <div style={{flex: '1', height: '100%'}}>
+          {isQuerySuccessful(lastQuery?.[1]) && (
+            <LoadChart
+              dataURL={resultURL(lastQuery[0])}
+              queryState={lastQuery[1]}
+            />
+          )}
+        </div>
+      </div>
     </div>
   );
 }

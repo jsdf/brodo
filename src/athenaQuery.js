@@ -82,9 +82,9 @@ function buildSampleQuery({cols, filters, schema}) {
   const selects = [];
   cols.forEach((col) => {
     selects.push(
-      schema.fields[col]?.derived != null
-        ? `${schema.fields[col].derived} as ${col}`
-        : col
+      schema.fields[col.name]?.derived != null
+        ? `${schema.fields[col.name].derived} as ${col.name}`
+        : col.name
     );
   });
 
@@ -93,10 +93,10 @@ function buildSampleQuery({cols, filters, schema}) {
   );
 
   return `
-      SELECT 
-        ${selects.join(',\n')}
-      FROM ${schema.table}
-      WHERE ${wheres.join('\n AND ')} 
+SELECT 
+${selects.join(',\n')}
+FROM ${schema.table}
+${wheres.length ? `WHERE ${wheres.join('\n AND ')}` : ''}
     `;
 }
 
