@@ -125,6 +125,7 @@ function QueryBuilder({api, schema}) {
     defaultAgg: 'sum',
     filters: [],
     schema,
+    type: state.type,
   };
 
   const groupBySelectValues = useMemo(

@@ -13,7 +13,7 @@ const path = require('path');
 const config = require('./config');
 const athena = require('./athena').init(config.athena);
 
-const DEV = process.env.NODE_ENV === 'development';
+const DEV = true || process.env.NODE_ENV === 'development';
 
 const uiRoot = 'dist';
 
@@ -169,10 +169,7 @@ class Server {
           res.status(200).send(result);
         })
         .catch((err) => {
-          res
-            .status(503)
-            .type('text')
-            .send(err.stack);
+          res.status(503).type('text').send(err.stack);
         });
     });
 
@@ -189,10 +186,7 @@ class Server {
           res.json(schema);
         })
         .catch((err) => {
-          res
-            .status(503)
-            .type('text')
-            .send(err.stack);
+          res.status(503).type('text').send(err.stack);
         });
     });
 
